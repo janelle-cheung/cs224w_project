@@ -1,0 +1,26 @@
+name: cs224w_sleep
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn
+  - plotly
+  - pytorch
+  - mne
+  - pyedflib
+  - scikit-learn
+  - ipython
+  - jupyter
+  - pip
+  - pip:
+    - torch-geometric
+    - yasa
+    - plotly_express
+    - pymatreader
