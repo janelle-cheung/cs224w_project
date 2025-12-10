@@ -54,19 +54,18 @@ def set_seed(seed=SEED):
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Directories
+# Main directories - scripts should create subdirs as needed
 DATA_DIR = PROJECT_ROOT / 'data'
 FIGURES_DIR = PROJECT_ROOT / 'figures'
-RESULTS_DIR = FIGURES_DIR / 'results'
 LOGS_DIR = PROJECT_ROOT / 'logs'
 MODELS_DIR = PROJECT_ROOT / 'models'
-DIRECTORIES = (DATA_DIR, FIGURES_DIR, RESULTS_DIR, LOGS_DIR, MODELS_DIR)
 
-# Create directories if they don't exist
-for directory in DIRECTORIES:
-    directory.mkdir(parents=True, exist_ok=True)
-
+# Raw data location
 RAW_DATA_DIR = DATA_DIR / 'osfstorage-archive'
+
+# Create main directories if they don't exist
+for directory in (DATA_DIR, FIGURES_DIR, LOGS_DIR, MODELS_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
 
 if not RAW_DATA_DIR.exists():
     raise FileNotFoundError(f"No data! Expected data at: {RAW_DATA_DIR}")
