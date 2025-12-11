@@ -39,6 +39,7 @@ SLEEP_STAGES = {
     'L': -1,  # Lights off / Unknown (exclude from analysis)
 }
 STAGE_NAMES = ['W', 'N1', 'N2', 'N3', 'R']  # Ordered by numeric label (excludes L)
+STAGE_NAMES_MAP = {i: name for i, name in enumerate(STAGE_NAMES)}  # {0: 'W', 1: 'N1', ...}
 
 def set_seed(seed=SEED):
     """Set all random seeds for reproducibility"""
@@ -103,3 +104,53 @@ def get_device():
         return torch.device('cpu')
 
 DEVICE = get_device()
+
+# ==================== PATIENT SPLITS ====================
+
+def load_patient_splits():
+    """
+    Load canonical patient train/val/test splits.
+
+    Returns:
+        dict with keys 'train', 'val', 'test' containing lists of patient IDs,
+        plus 'metadata' with split info.
+    """
+    import json
+    splits_file = DATA_DIR / 'patient_splits' / 'patient_splits.json'
+
+    if not splits_file.exists():
+        raise FileNotFoundError(
+            f"Patient splits not found at {splits_file}. "
+            "Run 'python scripts/preprocessing/create_patient_splits.py' first."
+        )
+
+    with open(splits_file, 'r') as f:
+        return json.load(f)
+
+
+def load_split_labels(split: str):
+    """
+    Load sleep stage labels and patient IDs for a specific split.
+
+    Args:
+        split: One of 'train', 'val', 'test'
+
+    Returns:
+        labels: np.ndarray of shape (n_epochs,) with sleep stage labels (0-4)
+        patient_ids: np.ndarray of shape (n_epochs,) with patient ID for each epoch
+    """
+    splits_dir = DATA_DIR / 'patient_splits'
+
+    labels_file = splits_dir / f'{split}_labels.npy'
+    patient_ids_file = splits_dir / f'{split}_patient_ids.npy'
+
+    if not labels_file.exists():
+        raise FileNotFoundError(
+            f"Split labels not found at {labels_file}. "
+            "Run 'python scripts/preprocessing/create_patient_splits.py' first."
+        )
+
+    labels = np.load(labels_file)
+    patient_ids = np.load(patient_ids_file, allow_pickle=True)
+
+    return labels, patient_ids

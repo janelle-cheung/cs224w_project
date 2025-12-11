@@ -287,6 +287,148 @@ class GATEncoder(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
+class TemporalGNNEncoder(nn.Module):
+    """
+    Temporal GNN Encoder for spatio-temporal EEG graphs.
+
+    Designed for graphs with nodes = n_channels * n_temporal_steps (e.g., 83 * 3 = 249).
+    Node indexing: node_idx = t * n_channels + channel_idx
+
+    Architecture:
+    1. GCN layers process spatial relationships across all nodes
+    2. Reshape node embeddings to (batch, n_temporal_steps, n_channels, hidden_dim)
+    3. GRU processes temporal sequence per channel: (n_temporal_steps, hidden_dim) -> hidden_dim
+    4. Mean pool across channels to get graph embedding
+    5. Linear projection to embedding_dim
+
+    Args:
+        input_dim: Input node feature dimension (default: 5 for spectral bands)
+        hidden_dim: Hidden layer dimension (default: 128)
+        embedding_dim: Output embedding dimension (default: 64)
+        n_layers: Number of GCN layers (default: 3)
+        n_channels: Number of EEG channels (default: 83)
+        n_temporal_steps: Number of temporal steps (default: 3)
+        dropout: Dropout rate (default: 0.5)
+        temporal_model: 'gru' or 'mean' for temporal aggregation (default: 'gru')
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 5,
+        hidden_dim: int = 128,
+        embedding_dim: int = 64,
+        n_layers: int = 3,
+        n_channels: int = 83,
+        n_temporal_steps: int = 3,
+        dropout: float = 0.5,
+        temporal_model: str = 'gru'
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.embedding_dim = embedding_dim
+        self.n_layers = n_layers
+        self.n_channels = n_channels
+        self.n_temporal_steps = n_temporal_steps
+        self.dropout = dropout
+        self.temporal_model = temporal_model
+
+        # GCN layers for spatial processing
+        self.convs = nn.ModuleList()
+        self.convs.append(GCNConv(input_dim, hidden_dim))
+        for _ in range(n_layers - 1):
+            self.convs.append(GCNConv(hidden_dim, hidden_dim))
+
+        # Batch normalization layers
+        self.bns = nn.ModuleList()
+        for _ in range(n_layers):
+            self.bns.append(nn.BatchNorm1d(hidden_dim))
+
+        # Temporal aggregation
+        if temporal_model == 'gru':
+            # GRU for temporal sequence: (batch * n_channels, n_temporal_steps, hidden_dim)
+            self.temporal_gru = nn.GRU(
+                input_size=hidden_dim,
+                hidden_size=hidden_dim,
+                num_layers=1,
+                batch_first=True,
+                dropout=0.0
+            )
+        elif temporal_model == 'mean':
+            self.temporal_gru = None
+        else:
+            raise ValueError(f"Unknown temporal_model: {temporal_model}. Use 'gru' or 'mean'.")
+
+        # Embedding projection
+        self.embedding_layer = nn.Linear(hidden_dim, embedding_dim)
+
+    def forward(self, data: Data) -> torch.Tensor:
+        """
+        Forward pass through Temporal GNN encoder.
+
+        Args:
+            data: PyG Data or Batch object with:
+                - x: Node features (num_nodes, input_dim) where num_nodes = batch_size * n_channels * n_temporal_steps
+                - edge_index: Edge indices (2, num_edges)
+                - batch: Batch assignment (num_nodes,)
+
+        Returns:
+            embeddings: (batch_size, embedding_dim) graph embeddings
+        """
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        # If single graph (no batch attribute), create batch tensor
+        if batch is None:
+            batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+
+        # Get batch size from batch tensor
+        batch_size = batch.max().item() + 1
+        nodes_per_graph = self.n_channels * self.n_temporal_steps
+
+        # === 1. GCN layers for spatial processing ===
+        for i in range(self.n_layers):
+            x = self.convs[i](x, edge_index)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # x shape: (total_nodes, hidden_dim) where total_nodes = batch_size * nodes_per_graph
+
+        # === 2. Reshape for temporal processing ===
+        # Reshape to (batch_size, n_temporal_steps, n_channels, hidden_dim)
+        # Node ordering in each graph: [t0_ch0, t0_ch1, ..., t0_ch82, t1_ch0, ..., t2_ch82]
+        x = x.view(batch_size, self.n_temporal_steps, self.n_channels, self.hidden_dim)
+
+        # === 3. Temporal aggregation per channel ===
+        if self.temporal_model == 'gru':
+            # Reshape for GRU: (batch_size * n_channels, n_temporal_steps, hidden_dim)
+            x = x.permute(0, 2, 1, 3)  # (batch, n_channels, n_temporal_steps, hidden_dim)
+            x = x.reshape(batch_size * self.n_channels, self.n_temporal_steps, self.hidden_dim)
+
+            # GRU forward pass
+            _, h_n = self.temporal_gru(x)  # h_n: (1, batch*n_channels, hidden_dim)
+            x = h_n.squeeze(0)  # (batch*n_channels, hidden_dim)
+
+            # Reshape back: (batch_size, n_channels, hidden_dim)
+            x = x.view(batch_size, self.n_channels, self.hidden_dim)
+        else:
+            # Simple mean pooling over temporal dimension
+            x = x.mean(dim=1)  # (batch_size, n_channels, hidden_dim)
+
+        # === 4. Mean pool across channels ===
+        x = x.mean(dim=1)  # (batch_size, hidden_dim)
+
+        # === 5. Project to embedding dimension ===
+        embedding = self.embedding_layer(x)  # (batch_size, embedding_dim)
+
+        return embedding
+
+    def get_num_params(self) -> int:
+        """Return total number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
 if __name__ == '__main__':
     """Test the models."""
     print("Testing GNN Models\n" + "=" * 60)
@@ -388,6 +530,83 @@ if __name__ == '__main__':
         embedding = gat_encoder(batch)
 
     print(f"Output embedding shape: {embedding.shape}")
+    print(f"Expected shape: (4, 64)\n")
+
+    # Test TemporalGNNEncoder
+    print("=" * 60)
+    print("Testing TemporalGNNEncoder")
+    print("=" * 60)
+
+    # Create temporal graph data (249 nodes = 83 channels * 3 time steps)
+    n_channels = 83
+    n_temporal_steps = 3
+    num_nodes_temporal = n_channels * n_temporal_steps  # 249
+    num_edges_temporal = 2822  # typical for k=10
+
+    x_temporal = torch.randn(num_nodes_temporal, input_dim)
+    edge_index_temporal = torch.randint(0, num_nodes_temporal, (2, num_edges_temporal))
+    data_temporal = Data(x=x_temporal, edge_index=edge_index_temporal)
+
+    print(f"Temporal graph: {num_nodes_temporal} nodes ({n_channels} channels × {n_temporal_steps} steps)")
+    print(f"Node features: {x_temporal.shape}")
+
+    # Test with GRU temporal model
+    temporal_encoder_gru = TemporalGNNEncoder(
+        input_dim=5,
+        hidden_dim=128,
+        embedding_dim=64,
+        n_layers=3,
+        n_channels=n_channels,
+        n_temporal_steps=n_temporal_steps,
+        dropout=0.5,
+        temporal_model='gru'
+    )
+
+    print(f"\nGRU model parameters: {temporal_encoder_gru.get_num_params():,}")
+
+    temporal_encoder_gru.eval()
+    with torch.no_grad():
+        embedding_gru = temporal_encoder_gru(data_temporal)
+
+    print(f"GRU output embedding shape: {embedding_gru.shape}")
+    print(f"Expected shape: (1, 64)")
+
+    # Test with mean temporal model
+    temporal_encoder_mean = TemporalGNNEncoder(
+        input_dim=5,
+        hidden_dim=128,
+        embedding_dim=64,
+        n_layers=3,
+        n_channels=n_channels,
+        n_temporal_steps=n_temporal_steps,
+        dropout=0.5,
+        temporal_model='mean'
+    )
+
+    print(f"\nMean model parameters: {temporal_encoder_mean.get_num_params():,}")
+
+    temporal_encoder_mean.eval()
+    with torch.no_grad():
+        embedding_mean = temporal_encoder_mean(data_temporal)
+
+    print(f"Mean output embedding shape: {embedding_mean.shape}")
+    print(f"Expected shape: (1, 64)")
+
+    # Test TemporalGNNEncoder with batch
+    print("\n" + "-" * 40)
+    print("Testing TemporalGNNEncoder with Batch")
+    print("-" * 40)
+
+    data_list_temporal = [data_temporal, data_temporal, data_temporal, data_temporal]
+    batch_temporal = Batch.from_data_list(data_list_temporal)
+
+    print(f"Batch: {batch_temporal.num_graphs} graphs")
+    print(f"Total nodes: {batch_temporal.num_nodes}")
+
+    with torch.no_grad():
+        embeddings_temporal = temporal_encoder_gru(batch_temporal)
+
+    print(f"Batch output embeddings shape: {embeddings_temporal.shape}")
     print(f"Expected shape: (4, 64)\n")
 
     print("=" * 60)

@@ -19,7 +19,7 @@ sys.path.append('src')
 
 from config import DATA_DIR, LOGS_DIR
 
-SPECTRAL_DIR = DATA_DIR / 'spectral_features'
+SPECTRAL_DIR = DATA_DIR / 'processed' / 'spectral_features'
 
 
 def main():
@@ -29,9 +29,10 @@ def main():
     args = parser.parse_args()
 
     n_components = args.n_components
-    output_dir = DATA_DIR / f'power{n_components}'
+    output_dir = DATA_DIR / 'processed' / f'power{n_components}'
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = LOGS_DIR / f'pca_variance_power{n_components}_variance.txt'
+    log_file = LOGS_DIR / 'baselines' / f'pca_variance_power{n_components}.txt'
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     spectral_files = sorted(SPECTRAL_DIR.glob("P*_spectral_features.npy"))
 

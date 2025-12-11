@@ -15,9 +15,10 @@ import sys
 from pathlib import Path
 
 sys.path.append('src')
-from config import SPECTRAL_DIR, PROCESSED_DIR
+from config import DATA_DIR
 
-OUTPUT_DIR = PROCESSED_DIR / 'handcrafted_features'
+SPECTRAL_DIR = DATA_DIR / 'processed' / 'spectral_features'
+OUTPUT_DIR = DATA_DIR / 'processed' / 'handcrafted_features'
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def compute_handcrafted(spectral_features: np.ndarray) -> np.ndarray:

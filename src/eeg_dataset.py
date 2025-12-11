@@ -245,62 +245,24 @@ class EEGGraphDataset(Dataset):
         return [g for g, l in zip(self.graphs, self.labels) if l == stage]
 
 
-def split_by_patient(
-    all_patient_ids: List[str],
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
-    seed: int = 42
-) -> tuple:
-    """
-    Split patient IDs into train/val/test sets.
-
-    Args:
-        all_patient_ids: List of all patient IDs
-        train_ratio: Fraction for training (default: 0.7)
-        val_ratio: Fraction for validation (default: 0.15)
-        test_ratio: Fraction for testing (default: 0.15)
-        seed: Random seed for reproducibility
-
-    Returns:
-        (train_ids, val_ids, test_ids) tuple of patient ID lists
-    """
-    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
-        "Ratios must sum to 1.0"
-
-    np.random.seed(seed)
-    n_patients = len(all_patient_ids)
-
-    # Shuffle patient IDs
-    shuffled_ids = np.random.permutation(all_patient_ids).tolist()
-
-    # Split
-    n_train = int(n_patients * train_ratio)
-    n_val = int(n_patients * val_ratio)
-
-    train_ids = shuffled_ids[:n_train]
-    val_ids = shuffled_ids[n_train:n_train + n_val]
-    test_ids = shuffled_ids[n_train + n_val:]
-
-    return train_ids, val_ids, test_ids
-
-
 if __name__ == '__main__':
     """Test the dataset."""
     from pathlib import Path
+    from config import load_patient_splits
 
-    # Get all patient IDs
-    all_files = sorted(SPECTRAL_DIR.glob("P*_spectral_features.npy"))
-    all_patient_ids = [f.name.split('_')[0] for f in all_files]
+    # Load canonical patient splits
+    splits = load_patient_splits()
+    train_ids = splits['train']
+    val_ids = splits['val']
+    test_ids = splits['test']
 
-    print(f"Found {len(all_patient_ids)} patients: {all_patient_ids[:5]}...\n")
+    print(f"Loaded patient splits:")
+    print(f"  Train: {len(train_ids)} patients")
+    print(f"  Val: {len(val_ids)} patients")
+    print(f"  Test: {len(test_ids)} patients\n")
 
-    # Split patients
-    train_ids, val_ids, test_ids = split_by_patient(all_patient_ids)
-    print(f"Split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test\n")
-
-    # Create dataset for first 3 patients
-    test_patients = all_patient_ids[:3]
+    # Create dataset for first 3 train patients
+    test_patients = train_ids[:3]
     dataset = EEGGraphDataset(test_patients, k=10)
 
     print(f"\nDataset size: {len(dataset)}")

@@ -20,7 +20,7 @@ sys.path.append('src')
 
 from config import DATA_DIR, LOGS_DIR, N_CHANNELS
 
-SPECTRAL_DIR = DATA_DIR / 'spectral_features'
+SPECTRAL_DIR = DATA_DIR / 'processed' / 'spectral_features'
 N_COMPONENTS = 32
 
 
@@ -60,11 +60,12 @@ def compute_connectivity_features(spectral_features: np.ndarray) -> np.ndarray:
 
 def main():
     # Output directories
-    corr_dir = DATA_DIR / 'correlation_matrices'
-    pca_dir = DATA_DIR / f'connectivity_{N_COMPONENTS}'
+    corr_dir = DATA_DIR / 'processed' / 'correlation_matrices'
+    pca_dir = DATA_DIR / 'processed' / f'connectivity_{N_COMPONENTS}'
     corr_dir.mkdir(parents=True, exist_ok=True)
     pca_dir.mkdir(parents=True, exist_ok=True)
-    log_file = LOGS_DIR / f'pca_variance_connectivity{N_COMPONENTS}.txt'
+    log_file = LOGS_DIR / 'baselines' / f'pca_variance_connectivity{N_COMPONENTS}.txt'
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     spectral_files = sorted(SPECTRAL_DIR.glob("P*_spectral_features.npy"))
 
