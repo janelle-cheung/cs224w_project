@@ -16,6 +16,7 @@ defaults:
     embedding_dim: 64
     n_layers: 3
     k: 10
+    pooling: attention
     seed: 42
 
   # Default search grid (can be overridden per model)

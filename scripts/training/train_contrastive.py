@@ -68,6 +68,9 @@ class TrainConfig:
     hidden_dim: int = 128
     embedding_dim: int = 64
 
+    # Pooling
+    pooling: str = 'attention'  # 'mean', 'max', 'sum', or 'attention'
+
     # Training
     batch_size: int = 32
     epochs: int = 100
@@ -110,7 +113,7 @@ def get_model(model_type: str, config: TrainConfig):
             embedding_dim=config.embedding_dim,
             n_layers=config.n_layers,
             dropout=config.dropout,
-            pooling='mean'
+            pooling=config.pooling
         )
     elif model_type == 'gat':
         return GATEncoder(
@@ -120,7 +123,7 @@ def get_model(model_type: str, config: TrainConfig):
             n_layers=config.n_layers,
             heads=4,
             dropout=config.dropout,
-            pooling='mean'
+            pooling=config.pooling
         )
     elif model_type == 'gin':
         return GINEncoder(
@@ -129,7 +132,7 @@ def get_model(model_type: str, config: TrainConfig):
             embedding_dim=config.embedding_dim,
             n_layers=config.n_layers,
             dropout=config.dropout,
-            pooling='mean'
+            pooling=config.pooling
         )
     elif model_type == 'temporal_gcn':
         return TemporalGNNEncoder(
@@ -141,7 +144,7 @@ def get_model(model_type: str, config: TrainConfig):
             n_temporal_steps=config.n_temporal_steps,
             dropout=config.dropout,
             temporal_model='gru',
-            channel_pooling='mean'
+            channel_pooling=config.pooling
         )
     elif model_type == 'temporal_gat':
         return TemporalGATEncoder(
@@ -154,7 +157,7 @@ def get_model(model_type: str, config: TrainConfig):
             heads=4,
             dropout=config.dropout,
             temporal_model='gru',
-            channel_pooling='mean'
+            channel_pooling=config.pooling
         )
     elif model_type == 'temporal_gin':
         return TemporalGINEncoder(
@@ -166,7 +169,7 @@ def get_model(model_type: str, config: TrainConfig):
             n_temporal_steps=config.n_temporal_steps,
             dropout=config.dropout,
             temporal_model='gru',
-            channel_pooling='mean'
+            channel_pooling=config.pooling
         )
     else:
         raise ValueError(f"Unknown model_type: {model_type}. Use 'gcn', 'gat', 'gin', 'temporal_gcn', 'temporal_gat', or 'temporal_gin'.")
@@ -366,9 +369,9 @@ def train(config: TrainConfig) -> Dict[str, Any]:
     # Convert lr to float in case it was parsed as string from YAML
     lr_val = float(config.lr)
     if config.dataset_type == 'temporal':
-        run_name = f"{config.model_type}_{config.dataset_type}_t{config.n_temporal_steps}_k{config.k}_e{config.embedding_dim}_temp{config.temperature:.2f}_lr{lr_val:.0e}_attn"
+        run_name = f"{config.model_type}_{config.dataset_type}_t{config.n_temporal_steps}_k{config.k}_e{config.embedding_dim}_temp{config.temperature:.2f}_lr{lr_val:.0e}_{config.pooling}"
     else:
-        run_name = f"{config.model_type}_{config.dataset_type}_k{config.k}_e{config.embedding_dim}_temp{config.temperature:.2f}_lr{lr_val:.0e}_attn"
+        run_name = f"{config.model_type}_{config.dataset_type}_k{config.k}_e{config.embedding_dim}_temp{config.temperature:.2f}_lr{lr_val:.0e}_{config.pooling}"
 
     # Create output directories
     model_dir = MODELS_DIR / 'contrastive'
@@ -609,6 +612,9 @@ def parse_args() -> TrainConfig:
                         help='Hidden dimension')
     parser.add_argument('--embedding_dim', type=int, default=64,
                         help='Embedding dimension')
+    parser.add_argument('--pooling', type=str, default='attention',
+                        choices=['mean', 'max', 'sum', 'attention'],
+                        help='Pooling method: mean, max, sum, or attention')
     # Training arguments
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size')
@@ -634,6 +640,7 @@ def parse_args() -> TrainConfig:
         n_layers=args.n_layers,
         hidden_dim=args.hidden_dim,
         embedding_dim=args.embedding_dim,
+        pooling=args.pooling,
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,

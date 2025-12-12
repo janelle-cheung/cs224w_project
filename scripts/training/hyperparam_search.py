@@ -116,6 +116,7 @@ def run_experiment(params: dict, dataset_type: str, model_type: str, fixed: dict
         embedding_dim=fixed.get('embedding_dim', 64),
         n_layers=fixed.get('n_layers', 3),
         k=fixed.get('k', 10),
+        pooling=fixed.get('pooling', 'attention'),
         seed=fixed.get('seed', 42),
         verbose=False,
         save_model=save_model,
