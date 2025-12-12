@@ -15,6 +15,8 @@ Node indexing: node_idx = t * 83 + channel_idx
   etc.
 
 Only stacks consecutive epochs with the same sleep stage label.
+
+Graphs are cached to disk after first creation for fast loading.
 """
 
 import numpy as np
@@ -22,6 +24,7 @@ import torch
 from torch_geometric.data import Dataset, Data
 from pathlib import Path
 from typing import List, Optional, Tuple
+import hashlib
 
 from config import DATA_DIR, N_CHANNELS
 
@@ -29,6 +32,7 @@ from config import DATA_DIR, N_CHANNELS
 SPECTRAL_DIR = DATA_DIR / 'processed' / 'spectral_features'
 CORRELATION_DIR = DATA_DIR / 'processed' / 'correlation_matrices'
 LABELS_DIR = DATA_DIR / 'processed' / 'sleep_stage_labels'
+CACHE_DIR = DATA_DIR / 'graph_cache'
 
 
 class TemporalEEGGraphDataset(Dataset):
@@ -59,11 +63,15 @@ class TemporalEEGGraphDataset(Dataset):
         n_temporal_steps: int = 3,
         k: int = 10,
         transform: Optional[callable] = None,
-        pre_transform: Optional[callable] = None
+        pre_transform: Optional[callable] = None,
+        use_cache: bool = True,
+        verbose: bool = True
     ):
-        self.patient_ids = patient_ids
+        self.patient_ids = sorted(patient_ids)  # Sort for consistent cache key
         self.n_temporal_steps = n_temporal_steps
         self.k = k
+        self.use_cache = use_cache
+        self.verbose = verbose
 
         self.spectral_dir = SPECTRAL_DIR
         self.corr_dir = CORRELATION_DIR
@@ -76,13 +84,19 @@ class TemporalEEGGraphDataset(Dataset):
 
         super().__init__(None, transform, pre_transform)
 
-        # Load all data
-        self._load_data()
+        # Try to load from cache, otherwise build and cache
+        if use_cache and self._load_from_cache():
+            pass  # Loaded successfully
+        else:
+            self._load_data()
+            if use_cache:
+                self._save_to_cache()
 
     def _load_data(self):
         """Load all patient data and create temporal graph representations."""
-        print(f"Loading Temporal EEG dataset for {len(self.patient_ids)} patients "
-              f"(n_steps={self.n_temporal_steps}, k={self.k})...")
+        if self.verbose:
+            print(f"Loading Temporal EEG dataset for {len(self.patient_ids)} patients "
+                  f"(n_steps={self.n_temporal_steps}, k={self.k})...")
 
         for patient_idx, patient_id in enumerate(self.patient_ids):
             try:
@@ -143,23 +157,84 @@ class TemporalEEGGraphDataset(Dataset):
                     self.patient_indices.append(patient_idx)
                     n_graphs += 1
 
-                print(f"  {patient_id}: {num_epochs} epochs → {n_graphs} temporal graphs")
+                if self.verbose:
+                    print(f"  {patient_id}: {num_epochs} epochs → {n_graphs} temporal graphs")
 
             except FileNotFoundError as e:
                 print(f"  {patient_id}: ERROR - Missing file: {e}")
             except Exception as e:
                 print(f"  {patient_id}: ERROR - {e}")
 
-        print(f"\nTotal temporal graphs loaded: {len(self.graphs)}")
+        if self.verbose:
+            print(f"\nTotal temporal graphs loaded: {len(self.graphs)}")
 
-        # Print label distribution
-        if self.labels:
-            unique_labels, counts = np.unique(self.labels, return_counts=True)
-            print(f"Label distribution:")
-            stage_names = ['W', 'N1', 'N2', 'N3', 'R']
-            for label, count in zip(unique_labels, counts):
-                pct = count / len(self.labels) * 100
-                print(f"  {stage_names[label]} ({label}): {count} ({pct:.1f}%)")
+            # Print label distribution
+            if self.labels:
+                unique_labels, counts = np.unique(self.labels, return_counts=True)
+                print(f"Label distribution:")
+                stage_names = ['W', 'N1', 'N2', 'N3', 'R']
+                for label, count in zip(unique_labels, counts):
+                    pct = count / len(self.labels) * 100
+                    print(f"  {stage_names[label]} ({label}): {count} ({pct:.1f}%)")
+
+    def _get_cache_key(self) -> str:
+        """Generate a unique cache key based on dataset parameters."""
+        key_str = f"temporal_{'_'.join(self.patient_ids)}_t{self.n_temporal_steps}_k{self.k}"
+        # Use hash to handle long patient lists
+        return hashlib.md5(key_str.encode()).hexdigest()[:16]
+
+    def _get_cache_path(self) -> Path:
+        """Get the path to the cache file."""
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return CACHE_DIR / f"temporal_{self._get_cache_key()}.pt"
+
+    def _load_from_cache(self) -> bool:
+        """Try to load dataset from cache. Returns True if successful."""
+        cache_path = self._get_cache_path()
+        if not cache_path.exists():
+            return False
+
+        try:
+            if self.verbose:
+                print(f"Loading from cache: {cache_path.name}...", end=" ", flush=True)
+            cached = torch.load(cache_path, weights_only=False)
+
+            # Verify cache matches current parameters
+            if (cached['n_temporal_steps'] != self.n_temporal_steps or
+                cached['k'] != self.k or
+                cached['patient_ids'] != self.patient_ids):
+                if self.verbose:
+                    print("cache mismatch, rebuilding")
+                return False
+
+            self.graphs = cached['graphs']
+            self.labels = cached['labels']
+            self.patient_indices = cached['patient_indices']
+            if self.verbose:
+                print(f"done ({len(self.graphs)} graphs)")
+            return True
+        except Exception as e:
+            print(f"cache load failed ({e}), rebuilding")
+            return False
+
+    def _save_to_cache(self):
+        """Save dataset to cache for fast loading next time."""
+        cache_path = self._get_cache_path()
+        if self.verbose:
+            print(f"Saving to cache: {cache_path.name}...", end=" ", flush=True)
+        try:
+            torch.save({
+                'patient_ids': self.patient_ids,
+                'n_temporal_steps': self.n_temporal_steps,
+                'k': self.k,
+                'graphs': self.graphs,
+                'labels': self.labels,
+                'patient_indices': self.patient_indices
+            }, cache_path)
+            if self.verbose:
+                print("done")
+        except Exception as e:
+            print(f"failed ({e})")
 
     def _find_valid_windows(self, labels: np.ndarray) -> List[Tuple[int, int]]:
         """

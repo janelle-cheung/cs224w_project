@@ -1,0 +1,96 @@
+# Hyperparameter Search Configuration
+# ====================================
+# Defines search grids for all model types.
+# Run with: python scripts/training/hyperparam_search.py --config configs/hyperparam_search.yaml
+
+# ============================================================================
+# SHARED SETTINGS (applied to all models unless overridden)
+# ============================================================================
+defaults:
+  # Fixed parameters (not searched)
+  fixed:
+    epochs: 50
+    patience: 10
+    batch_size: 256
+    hidden_dim: 128
+    embedding_dim: 64
+    n_layers: 3
+    k: 10
+    seed: 42
+
+  # Default search grid (can be overridden per model)
+  grid:
+    temperature: [0.07, 0.1, 0.2]
+    lr: [1e-4, 5e-4, 1e-3]
+    dropout: [0.2, 0.3, 0.5]
+
+# ============================================================================
+# SINGLE-EPOCH MODELS
+# ============================================================================
+gcn:
+  dataset_type: single_epoch
+  model_type: gcn
+  # Uses default grid
+
+gat:
+  dataset_type: single_epoch
+  model_type: gat
+  # GAT may benefit from different dropout due to attention
+  grid:
+    temperature: [0.07, 0.1, 0.2]
+    lr: [1e-4, 5e-4, 1e-3]
+    dropout: [0.3, 0.5]
+
+gin:
+  dataset_type: single_epoch
+  model_type: gin
+  # Uses default grid
+
+# ============================================================================
+# TEMPORAL MODELS
+# ============================================================================
+temporal_gcn:
+  dataset_type: temporal
+  model_type: temporal_gcn
+  fixed:
+    n_temporal_steps: 3
+  # Temporal models may need lower LR for stability
+  grid:
+    temperature: [0.07, 0.1, 0.2]
+    lr: [1e-4, 5e-4]
+    dropout: [0.2, 0.3, 0.5]
+
+temporal_gat:
+  dataset_type: temporal
+  model_type: temporal_gat
+  fixed:
+    n_temporal_steps: 3
+  grid:
+    temperature: [0.07, 0.1, 0.2]
+    lr: [1e-4, 5e-4]
+    dropout: [0.3, 0.5]
+
+temporal_gin:
+  dataset_type: temporal
+  model_type: temporal_gin
+  fixed:
+    n_temporal_steps: 3
+  grid:
+    temperature: [0.07, 0.1, 0.2]
+    lr: [1e-4, 5e-4]
+    dropout: [0.2, 0.3, 0.5]
+
+# ============================================================================
+# QUICK TEST CONFIG (for debugging)
+# ============================================================================
+# Uncomment and use with --model gcn_quick
+# gcn_quick:
+#   dataset_type: single_epoch
+#   model_type: gcn
+#   fixed:
+#     epochs: 5
+#     patience: 3
+#   grid:
+#     temperature: [0.07]
+#     lr: [1e-3]
+#     dropout: [0.3]

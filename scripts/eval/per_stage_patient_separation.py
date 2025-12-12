@@ -4,10 +4,9 @@ Check if embeddings separate patients WITHIN each sleep stage.
 This is the real test for individual fingerprints.
 
 Usage:
-    python scripts/diagnostic_per_patient_stage_clustering.py                    # val only (default)
-    python scripts/diagnostic_per_patient_stage_clustering.py --split train      # train only
-    python scripts/diagnostic_per_patient_stage_clustering.py --split val        # val only
-    python scripts/diagnostic_per_patient_stage_clustering.py --split train_val  # train + val combined
+    python scripts/eval/per_stage_patient_separation.py --folder path/to/embeddings --splits val
+    python scripts/eval/per_stage_patient_separation.py --folder path/to/embeddings --splits train val test
+    python scripts/eval/per_stage_patient_separation.py --folder path/to/embeddings --splits train val
 """
 
 import argparse
@@ -22,40 +21,63 @@ sys.path.append('src')
 from config import DATA_DIR, LOGS_DIR, FIGURES_DIR
 
 
-def load_embeddings(embeddings_dir: Path, split: str):
+def load_embeddings(embeddings_dir: Path, splits: list):
     """
-    Load embeddings, labels, and patient IDs for specified split(s).
+    Load embeddings from embeddings_dir, and labels/patient_ids.
+
+    - patient_ids: ALWAYS from patient_splits
+    - labels: from embeddings_dir first, fallback to patient_splits (for baselines)
 
     Args:
-        embeddings_dir: Directory containing embedding files
-        split: One of 'train', 'val', 'test', or 'all'
+        embeddings_dir: Directory containing embedding files ({split}_embeddings.npy)
+        splits: List of splits to load, e.g. ['train'], ['val'], ['train', 'val', 'test']
 
     Returns:
         emb, labels, patient_ids as numpy arrays
+
+    Raises:
+        FileNotFoundError: If any requested split's files are missing
     """
-    if split == 'train_val':
-        splits_to_load = ['train', 'val']
-    else:
-        splits_to_load = [split]
+    patient_splits_dir = DATA_DIR / 'patient_splits'
 
     emb_list = []
     labels_list = []
     patient_ids_list = []
 
-    for s in splits_to_load:
+    for s in splits:
         emb_file = embeddings_dir / f'{s}_embeddings.npy'
+
+        if not emb_file.exists():
+            raise FileNotFoundError(f"Missing required file: {emb_file}")
+
+        emb = np.load(emb_file)
+        emb_list.append(emb)
+
+        # Labels: check embeddings_dir first, then patient_splits (for baselines)
         labels_file = embeddings_dir / f'{s}_labels.npy'
+        if not labels_file.exists():
+            labels_file = patient_splits_dir / f'{s}_labels.npy'
+        if not labels_file.exists():
+            raise FileNotFoundError(f"Missing labels file for {s}")
+
+        # Patient IDs: check embeddings_dir first (newer runs), then patient_splits
         patient_file = embeddings_dir / f'{s}_patient_ids.npy'
+        if not patient_file.exists():
+            patient_file = patient_splits_dir / f'{s}_patient_ids.npy'
+        if not patient_file.exists():
+            raise FileNotFoundError(f"Missing patient_ids file for {s}")
 
-        if emb_file.exists():
-            emb_list.append(np.load(emb_file))
-            labels_list.append(np.load(labels_file))
-            patient_ids_list.append(np.load(patient_file, allow_pickle=True))
-        else:
-            print(f"Warning: {emb_file} not found, skipping")
+        labels = np.load(labels_file)
+        pids = np.load(patient_file, allow_pickle=True)
 
-    if not emb_list:
-        raise FileNotFoundError(f"No embedding files found for split(s): {splits_to_load}")
+        # Verify sizes match
+        if len(labels) != len(emb):
+            raise ValueError(f"Labels size mismatch for {s}: emb={len(emb)}, labels={len(labels)}")
+        if len(pids) != len(emb):
+            raise ValueError(f"Patient IDs size mismatch for {s}: emb={len(emb)}, pids={len(pids)}")
+
+        labels_list.append(labels)
+        patient_ids_list.append(pids)
 
     emb = np.concatenate(emb_list)
     labels = np.concatenate(labels_list)
@@ -64,17 +86,68 @@ def load_embeddings(embeddings_dir: Path, split: str):
     return emb, labels, patient_ids
 
 
-def analyze_patient_separation_per_stage(embeddings_dir, split='val'):
+def compute_separation_ratio(dist_matrix, patient_labels):
+    """
+    Compute separation ratio (inter/intra) given a distance matrix and patient labels.
+    """
+    intra_dists = []
+    inter_dists = []
+
+    n = len(patient_labels)
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = dist_matrix[i, j]
+            if patient_labels[i] == patient_labels[j]:
+                intra_dists.append(d)
+            else:
+                inter_dists.append(d)
+
+    if len(intra_dists) == 0:
+        return 0.0
+
+    return np.mean(inter_dists) / np.mean(intra_dists)
+
+
+def permutation_test_per_stage(stage_emb, stage_patients, n_permutations=1000):
+    """
+    Run permutation test for a single stage.
+    Shuffles patient labels within the stage and computes null distribution of separation ratios.
+
+    Returns:
+        null_ratios: array of separation ratios under null hypothesis
+    """
+    # Precompute distance matrix (this is the expensive part, only do once)
+    dist_matrix = squareform(pdist(stage_emb))
+
+    null_ratios = []
+    for _ in range(n_permutations):
+        # Shuffle patient labels
+        shuffled_patients = np.random.permutation(stage_patients)
+        ratio = compute_separation_ratio(dist_matrix, shuffled_patients)
+        null_ratios.append(ratio)
+
+    return np.array(null_ratios)
+
+
+def analyze_patient_separation_per_stage(embeddings_dir, splits: list, n_permutations=1000):
     """
     For each sleep stage, compute:
     - Intra-patient distances (same patient, same stage, different epochs)
     - Inter-patient distances (different patients, same stage)
     - Silhouette score for patient clustering within that stage
+    - Null hypothesis threshold via permutation test
+
+    Args:
+        embeddings_dir: Directory containing embedding files
+        splits: List of splits to analyze, e.g. ['train'], ['val'], ['train', 'val', 'test']
+        n_permutations: Number of permutations for null hypothesis test
     """
     embeddings_dir = Path(embeddings_dir)
 
     # Load embeddings and labels for specified split(s)
-    emb, labels, patient_ids = load_embeddings(embeddings_dir, split)
+    emb, labels, patient_ids = load_embeddings(embeddings_dir, splits)
+
+    split_str = '+'.join(splits)
     
     # Convert patient IDs to numeric
     unique_patients = sorted(set(patient_ids))
@@ -86,36 +159,37 @@ def analyze_patient_separation_per_stage(embeddings_dir, split='val'):
     print("=" * 70)
     print("PER-STAGE PATIENT SEPARATION ANALYSIS")
     print("=" * 70)
-    print(f"Split: {split}")
+    print(f"Split(s): {split_str}")
     print(f"Total embeddings: {len(emb)}")
-    print(f"Unique patients: {len(unique_patients)}\n")
-    
+    print(f"Unique patients: {len(unique_patients)}")
+    print(f"Permutation tests: {n_permutations} iterations\n")
+
     results = {}
-    
+
     for stage_idx in range(5):
         stage_name = stage_names[stage_idx]
         mask = labels == stage_idx
-        
+
         if mask.sum() < 2:
             print(f"{stage_name}: Skipped (< 2 epochs)")
             continue
-        
+
         stage_emb = emb[mask]
         stage_patients = patient_numeric[mask]
-        
+
         # Need at least 2 unique patients
         if len(np.unique(stage_patients)) < 2:
             print(f"{stage_name}: Skipped (< 2 unique patients)")
             continue
-        
+
         # Compute all pairwise distances
         distances = pdist(stage_emb)
         dist_matrix = squareform(distances)
-        
+
         # Separate intra vs inter
         intra_dists = []
         inter_dists = []
-        
+
         for i in range(len(stage_emb)):
             for j in range(i + 1, len(stage_emb)):
                 d = dist_matrix[i, j]
@@ -123,19 +197,29 @@ def analyze_patient_separation_per_stage(embeddings_dir, split='val'):
                     intra_dists.append(d)
                 else:
                     inter_dists.append(d)
-        
+
         intra_dists = np.array(intra_dists)
         inter_dists = np.array(inter_dists)
-        
+
         # Silhouette for patient clustering in this stage
         try:
             pat_sil = silhouette_score(stage_emb, stage_patients)
         except:
             pat_sil = 0.0
-        
+
         # Separation ratio
         sep_ratio = np.mean(inter_dists) / np.mean(intra_dists) if len(intra_dists) > 0 else 0
-        
+
+        # Permutation test for null hypothesis
+        print(f"{stage_name}: Running permutation test...")
+        null_ratios = permutation_test_per_stage(stage_emb, stage_patients, n_permutations)
+        null_mean = np.mean(null_ratios)
+        null_std = np.std(null_ratios)
+        null_95 = np.percentile(null_ratios, 95)
+
+        # p-value: fraction of null ratios >= observed ratio
+        p_value = np.mean(null_ratios >= sep_ratio)
+
         results[stage_name] = {
             'n_epochs': len(stage_emb),
             'n_patients': len(np.unique(stage_patients)),
@@ -144,43 +228,50 @@ def analyze_patient_separation_per_stage(embeddings_dir, split='val'):
             'inter_mean': np.mean(inter_dists),
             'inter_std': np.std(inter_dists),
             'separation_ratio': sep_ratio,
-            'silhouette': pat_sil
+            'silhouette': pat_sil,
+            'null_mean': null_mean,
+            'null_std': null_std,
+            'null_95': null_95,
+            'p_value': p_value
         }
-        
-        print(f"{stage_name}:")
+
         print(f"  Epochs: {len(stage_emb)}, Patients: {len(np.unique(stage_patients))}")
         print(f"  Intra-patient dist:  {np.mean(intra_dists):.4f} ± {np.std(intra_dists):.4f}")
         print(f"  Inter-patient dist:  {np.mean(inter_dists):.4f} ± {np.std(inter_dists):.4f}")
         print(f"  Separation ratio (inter/intra): {sep_ratio:.3f}")
+        print(f"  Null hypothesis: {null_mean:.3f} ± {null_std:.3f} (95th: {null_95:.3f})")
+        print(f"  p-value: {p_value:.4f}")
         print(f"  Patient silhouette: {pat_sil:.4f}")
-        
-        if sep_ratio > 1.2:
-            print(f"  ✅ GOOD: Patients separated")
+
+        if sep_ratio > null_95:
+            print(f"  ✅ SIGNIFICANT: Patients separated (p < 0.05)")
         else:
-            print(f"  ❌ BAD: Patients overlapping")
+            print(f"  ❌ NOT SIGNIFICANT: Patients overlapping")
         print()
     
     # Summary
     print("=" * 70)
     print("SUMMARY")
     print("=" * 70)
-    
-    good_stages = [s for s, r in results.items() if r['separation_ratio'] > 1.2]
-    bad_stages = [s for s, r in results.items() if r['separation_ratio'] <= 1.2]
-    
-    if good_stages:
-        print(f"✅ Stages with good patient separation: {', '.join(good_stages)}")
-    if bad_stages:
-        print(f"❌ Stages with poor patient separation: {', '.join(bad_stages)}")
-    
+
+    # Use null hypothesis threshold (p < 0.05) instead of hardcoded 1.2
+    sig_stages = [s for s, r in results.items() if r['separation_ratio'] > r['null_95']]
+    nonsig_stages = [s for s, r in results.items() if r['separation_ratio'] <= r['null_95']]
+
+    if sig_stages:
+        print(f"✅ Stages with significant patient separation (p < 0.05): {', '.join(sig_stages)}")
+    if nonsig_stages:
+        print(f"❌ Stages without significant separation: {', '.join(nonsig_stages)}")
+
     avg_ratio = np.mean([r['separation_ratio'] for r in results.values()])
-    print(f"\nAverage separation ratio: {avg_ratio:.3f}")
-    
-    if avg_ratio > 1.2:
-        print("→ Model has patient fingerprints")
+    avg_null = np.mean([r['null_mean'] for r in results.values()])
+    print(f"\nAverage separation ratio: {avg_ratio:.3f} (null avg: {avg_null:.3f})")
+
+    if len(sig_stages) >= len(results) / 2:
+        print("→ Model has patient fingerprints (majority of stages significant)")
     else:
         print("→ Model does NOT have patient fingerprints")
-    
+
     return results
 
 
@@ -223,35 +314,33 @@ def plot_patient_separation(results: dict, output_name: str, split: str):
     ax.legend()
     ax.grid(axis='y', alpha=0.3)
 
-    # Right panel: Separation ratio and silhouette (dual y-axis)
+    # Right panel: Separation ratio vs null threshold
     ax1 = axes[1]
     sep_ratios = [results[s]['separation_ratio'] for s in stages]
-    silhouettes = [results[s]['silhouette'] for s in stages]
+    null_means = [results[s]['null_mean'] for s in stages]
+    null_95s = [results[s]['null_95'] for s in stages]
 
-    color1 = 'tab:green'
+    # Bar chart: observed separation ratio
+    bars3 = ax1.bar(x, sep_ratios, width * 0.8, label='Observed Sep. Ratio',
+                    color='tab:green', alpha=0.8)
+
+    # Plot null mean as horizontal markers with error showing 95th percentile
+    ax1.scatter(x, null_means, color='tab:red', marker='_', s=200, linewidths=2,
+                label='Null Mean', zorder=5)
+
+    # Plot 95th percentile as threshold line per stage
+    for i, (xi, null_95) in enumerate(zip(x, null_95s)):
+        ax1.hlines(y=null_95, xmin=xi - width/2, xmax=xi + width/2,
+                   colors='tab:red', linestyles='--', alpha=0.7,
+                   label='Null 95th %ile' if i == 0 else None)
+
     ax1.set_xlabel('Sleep Stage')
-    ax1.set_ylabel('Separation Ratio (inter/intra)', color=color1)
-    bars3 = ax1.bar(x - width/2, sep_ratios, width, label='Sep. Ratio',
-                    color=color1, alpha=0.8)
-    ax1.tick_params(axis='y', labelcolor=color1)
-    ax1.axhline(y=1.2, color=color1, linestyle='--', alpha=0.5, label='Threshold (1.2)')
-
-    ax2 = ax1.twinx()
-    color2 = 'tab:purple'
-    ax2.set_ylabel('Silhouette Score', color=color2)
-    bars4 = ax2.bar(x + width/2, silhouettes, width, label='Silhouette',
-                    color=color2, alpha=0.8)
-    ax2.tick_params(axis='y', labelcolor=color2)
-    ax2.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-
+    ax1.set_ylabel('Separation Ratio (inter/intra)')
     ax1.set_xticks(x)
     ax1.set_xticklabels(stages)
-    ax1.set_title('Patient Separation Metrics')
-
-    # Combined legend
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+    ax1.set_title('Separation Ratio vs Null Hypothesis')
+    ax1.legend(loc='upper right')
+    ax1.grid(axis='y', alpha=0.3)
 
     fig.suptitle(f'Per-Stage Patient Separation: {output_name} ({split})', fontsize=12)
     plt.tight_layout()
@@ -268,25 +357,22 @@ def plot_patient_separation(results: dict, output_name: str, split: str):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Per-stage patient separation analysis')
-    parser.add_argument('--embeddings_dir', type=str, default=None,
-                        help='Directory containing embedding files (default: temporal GCN)')
-    parser.add_argument('--split', type=str, default='val',
-                        choices=['train', 'val', 'train_val'],
-                        help='Which split(s) to analyze (default: val)')
+    parser.add_argument('--folder', type=str, required=True,
+                        help='Directory containing embedding files')
+    parser.add_argument('--splits', type=str, nargs='+', default=['val'],
+                        choices=['train', 'val', 'test'],
+                        help='Which split(s) to analyze (default: val). Can specify multiple.')
     args = parser.parse_args()
 
-    # Default to temporal GCN embeddings
-    if args.embeddings_dir is None:
-        embeddings_dir = DATA_DIR / 'graph_embeddings' / 'temporal_gcn_temporal_t3_k10_e64_temp0.50_lr1e-03'
-    else:
-        embeddings_dir = Path(args.embeddings_dir)
+    embeddings_dir = Path(args.folder)
 
     if not embeddings_dir.exists():
-        print(f"Embeddings dir not found: {embeddings_dir}")
+        print(f"Error: Embeddings directory not found: {embeddings_dir}")
         sys.exit(1)
 
-    results = analyze_patient_separation_per_stage(embeddings_dir, split=args.split)
+    results = analyze_patient_separation_per_stage(embeddings_dir, splits=args.splits)
 
     # Generate plot
     output_name = embeddings_dir.name
-    plot_patient_separation(results, output_name, args.split)
+    split_str = '+'.join(args.splits)
+    plot_patient_separation(results, output_name, split_str)

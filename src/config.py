@@ -3,15 +3,9 @@ import torch
 import random
 import numpy as np
 
-# ==================== HYPERPARAMETERS ====================
+# ==================== CONSTANTS ====================
 
 SEED = 42
-DURATION = 30  # seconds
-
-# GNN parameters
-EMBEDDING_DIM = 64
-N_GNN_LAYERS = 3
-LEARNING_RATE = 0.001
 
 # EEG parameters
 # EEG unit is Volts in MNE

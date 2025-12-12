@@ -34,6 +34,12 @@ class NTXentLoss(nn.Module):
         """
         Compute NT-Xent loss for a batch of embeddings.
 
+        Positive pairs: samples with the SAME sleep stage
+        Negative pairs: samples with DIFFERENT sleep stages
+
+        This trains embeddings to cluster by sleep stage. Patient separation
+        is then measured post-hoc to test if fingerprints emerge naturally.
+
         Args:
             embeddings: (batch_size, embedding_dim) tensor of embeddings
             sleep_stages: (batch_size,) tensor of sleep stage labels (0-4)
@@ -51,7 +57,7 @@ class NTXentLoss(nn.Module):
         # Compute similarity matrix: (batch_size, batch_size)
         similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
 
-        # Create mask for positive pairs (same sleep stage)
+        # Create mask for positive pairs (same sleep stage, excluding self)
         positive_mask = self._create_positive_mask(sleep_stages, device)
 
         # Create mask for negative pairs
@@ -90,29 +96,25 @@ class NTXentLoss(nn.Module):
 
         # Average over valid rows
         loss = loss[valid_rows].mean()
-        print(f"NT-Xent Loss: {loss.item():.4f}")
 
         return loss
 
-    def _create_positive_mask(self, sleep_stages: torch.Tensor, device: torch.device) -> torch.Tensor:
+    def _create_positive_mask(self, labels: torch.Tensor, device: torch.device) -> torch.Tensor:
         """
-        Create mask for positive pairs (same sleep stage, excluding self).
+        Create mask for positive pairs (same label, excluding self).
 
         Args:
-            sleep_stages: (batch_size,) tensor of sleep stage labels
+            labels: (batch_size,) tensor of labels
             device: Device to create tensor on
 
         Returns:
-            (batch_size, batch_size) boolean mask
+            (batch_size, batch_size) float mask
         """
-        batch_size = sleep_stages.shape[0]
-        mask = torch.zeros((batch_size, batch_size), dtype=torch.bool, device=device)
-
-        for i in range(batch_size):
-            for j in range(batch_size):
-                if i != j and sleep_stages[i] == sleep_stages[j]:
-                    mask[i, j] = True
-
+        # Vectorized: compare all pairs
+        # labels[:, None] == labels[None, :] gives (batch, batch) bool matrix
+        mask = labels.unsqueeze(1) == labels.unsqueeze(0)
+        # Exclude diagonal (self-comparisons)
+        mask = mask & ~torch.eye(mask.shape[0], dtype=torch.bool, device=device)
         return mask.float()
 
     def _create_negative_mask(self, batch_size: int, device: torch.device) -> torch.Tensor:

@@ -1,0 +1,11 @@
+Baseline Embeddings - connectivity64
+PCA fitted on TRAIN data only (no data leakage)
+
+Train: 16617 epochs from 20 patients
+PCA variance explained (train): 91.88%
+
+Val: 3471 epochs from 4 patients
+Test: 4105 epochs from 5 patients
+train: ALIGNED (16617 samples)
+val: ALIGNED (3471 samples)
+test: ALIGNED (4105 samples)

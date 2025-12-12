@@ -4,12 +4,14 @@ Input: spectral features (num_epochs, 83, 5) per patient
 Process: correlation matrix per epoch -> upper triangle -> PCA
 Output:
   - Raw upper triangle: data/correlation_matrices/P##_corr.npy (num_epochs, 3403)
-  - PCA-reduced: data/connectivity_64/P##_connectivity_64.npy (num_epochs, 64)
+  - PCA-reduced: data/connectivity_{n}/P##_connectivity_{n}.npy (num_epochs, n)
 
 Usage:
-    python scripts/create_connectivity_baseline.py
+    python scripts/baselines/create_connectivity_baseline.py --n_components 64
+    python scripts/baselines/create_connectivity_baseline.py --n_components 32
 """
 
+import argparse
 import numpy as np
 import sys
 from pathlib import Path
@@ -21,7 +23,6 @@ sys.path.append('src')
 from config import DATA_DIR, LOGS_DIR, N_CHANNELS
 
 SPECTRAL_DIR = DATA_DIR / 'processed' / 'spectral_features'
-N_COMPONENTS = 32
 
 
 def compute_connectivity_features(spectral_features: np.ndarray) -> np.ndarray:
@@ -59,25 +60,32 @@ def compute_connectivity_features(spectral_features: np.ndarray) -> np.ndarray:
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Connectivity baseline with PCA')
+    parser.add_argument('--n_components', type=int, required=True,
+                        help='Number of PCA components')
+    args = parser.parse_args()
+
+    n_components = args.n_components
+
     # Output directories
     corr_dir = DATA_DIR / 'processed' / 'correlation_matrices'
-    pca_dir = DATA_DIR / 'processed' / f'connectivity_{N_COMPONENTS}'
+    pca_dir = DATA_DIR / 'processed' / f'connectivity_{n_components}'
     corr_dir.mkdir(parents=True, exist_ok=True)
     pca_dir.mkdir(parents=True, exist_ok=True)
-    log_file = LOGS_DIR / 'baselines' / f'pca_variance_connectivity{N_COMPONENTS}.txt'
+    log_file = LOGS_DIR / 'baselines' / f'pca_variance_connectivity{n_components}.txt'
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     spectral_files = sorted(SPECTRAL_DIR.glob("P*_spectral_features.npy"))
 
     print(f"Processing {len(spectral_files)} patients...")
-    print(f"Pipeline: (epochs, 83, 5) -> corr matrix (83, 83) -> upper tri (3403) -> PCA ({N_COMPONENTS}D)")
+    print(f"Pipeline: (epochs, 83, 5) -> corr matrix (83, 83) -> upper tri (3403) -> PCA ({n_components}D)")
     print(f"Raw correlation output: {corr_dir}")
     print(f"PCA output: {pca_dir}\n")
 
     log_lines = [
-        f"Connectivity Baseline - {N_COMPONENTS}D",
+        f"Connectivity Baseline - {n_components}D",
         f"Input: spectral features (num_epochs, 83 channels, 5 bands)",
-        f"Process: correlation matrix -> upper triangle (3403D) -> PCA ({N_COMPONENTS}D)",
+        f"Process: correlation matrix -> upper triangle (3403D) -> PCA ({n_components}D)",
         "",
         "Variance Explained per Patient:",
         "-" * 40,
@@ -103,11 +111,11 @@ def main():
             connectivity_scaled = scaler.fit_transform(connectivity)
 
             # Apply PCA
-            pca = PCA(n_components=N_COMPONENTS)
+            pca = PCA(n_components=n_components)
             features_pca = pca.fit_transform(connectivity_scaled)
 
             # Save PCA features
-            pca_file = pca_dir / f'{patient_id}_connectivity_{N_COMPONENTS}.npy'
+            pca_file = pca_dir / f'{patient_id}_connectivity_{n_components}.npy'
             np.save(pca_file, features_pca.astype(np.float32))
 
             variance_explained = pca.explained_variance_ratio_.sum() * 100

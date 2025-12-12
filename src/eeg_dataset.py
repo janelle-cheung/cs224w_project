@@ -6,6 +6,8 @@ Creates graph representations from EEG data where:
 - Node features: 5D spectral power (delta, theta, alpha, beta, gamma)
 - Edges: Top-k strongest correlations per node
 - Labels: Sleep stage (0-4)
+
+Graphs are cached to disk after first creation for fast loading.
 """
 
 import numpy as np
@@ -13,6 +15,7 @@ import torch
 from torch_geometric.data import Dataset, Data
 from pathlib import Path
 from typing import List, Optional
+import hashlib
 
 from config import DATA_DIR, N_CHANNELS
 
@@ -20,6 +23,7 @@ from config import DATA_DIR, N_CHANNELS
 SPECTRAL_DIR = DATA_DIR / 'processed' / 'spectral_features'
 CORRELATION_DIR = DATA_DIR / 'processed' / 'correlation_matrices'
 LABELS_DIR = DATA_DIR / 'processed' / 'sleep_stage_labels'
+CACHE_DIR = DATA_DIR / 'graph_cache'
 
 
 class EEGGraphDataset(Dataset):
@@ -44,10 +48,14 @@ class EEGGraphDataset(Dataset):
         patient_ids: List[str],
         k: int = 10,
         transform: Optional[callable] = None,
-        pre_transform: Optional[callable] = None
+        pre_transform: Optional[callable] = None,
+        use_cache: bool = True,
+        verbose: bool = True
     ):
-        self.patient_ids = patient_ids
+        self.patient_ids = sorted(patient_ids)  # Sort for consistent cache key
         self.k = k
+        self.use_cache = use_cache
+        self.verbose = verbose
 
         self.spectral_dir = SPECTRAL_DIR
         self.corr_dir = CORRELATION_DIR
@@ -60,12 +68,18 @@ class EEGGraphDataset(Dataset):
 
         super().__init__(None, transform, pre_transform)
 
-        # Load all data
-        self._load_data()
+        # Try to load from cache, otherwise build and cache
+        if use_cache and self._load_from_cache():
+            pass  # Loaded successfully
+        else:
+            self._load_data()
+            if use_cache:
+                self._save_to_cache()
 
     def _load_data(self):
         """Load all patient data and create graph representations."""
-        print(f"Loading EEG graph dataset for {len(self.patient_ids)} patients (k={self.k})...")
+        if self.verbose:
+            print(f"Loading EEG graph dataset for {len(self.patient_ids)} patients (k={self.k})...")
 
         for patient_idx, patient_id in enumerate(self.patient_ids):
             try:
@@ -121,22 +135,85 @@ class EEGGraphDataset(Dataset):
                     self.labels.append(int(label))
                     self.patient_indices.append(patient_idx)
 
-                print(f"  {patient_id}: {num_epochs} epochs → {len([l for l in labels[:, 1] if l >= 0])} valid graphs")
+                if self.verbose:
+                    print(f"  {patient_id}: {num_epochs} epochs → {len([l for l in labels[:, 1] if l >= 0])} valid graphs")
 
             except FileNotFoundError as e:
-                print(f"  {patient_id}: ERROR - Missing file: {e}")
+                if self.verbose:
+                    print(f"  {patient_id}: ERROR - Missing file: {e}")
             except Exception as e:
-                print(f"  {patient_id}: ERROR - {e}")
+                if self.verbose:
+                    print(f"  {patient_id}: ERROR - {e}")
 
-        print(f"\nTotal graphs loaded: {len(self.graphs)}")
+        if self.verbose:
+            print(f"\nTotal graphs loaded: {len(self.graphs)}")
 
-        # Print label distribution
-        unique_labels, counts = np.unique(self.labels, return_counts=True)
-        print(f"Label distribution:")
-        stage_names = ['W', 'N1', 'N2', 'N3', 'R']
-        for label, count in zip(unique_labels, counts):
-            pct = count / len(self.labels) * 100
-            print(f"  {stage_names[label]} ({label}): {count} ({pct:.1f}%)")
+            # Print label distribution
+            unique_labels, counts = np.unique(self.labels, return_counts=True)
+            print(f"Label distribution:")
+            stage_names = ['W', 'N1', 'N2', 'N3', 'R']
+            for label, count in zip(unique_labels, counts):
+                pct = count / len(self.labels) * 100
+                print(f"  {stage_names[label]} ({label}): {count} ({pct:.1f}%)")
+
+    def _get_cache_key(self) -> str:
+        """Generate a unique cache key based on dataset parameters."""
+        key_str = f"single_{'_'.join(self.patient_ids)}_k{self.k}"
+        # Use hash to handle long patient lists
+        return hashlib.md5(key_str.encode()).hexdigest()[:16]
+
+    def _get_cache_path(self) -> Path:
+        """Get the path to the cache file."""
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return CACHE_DIR / f"single_{self._get_cache_key()}.pt"
+
+    def _load_from_cache(self) -> bool:
+        """Try to load dataset from cache. Returns True if successful."""
+        cache_path = self._get_cache_path()
+        if not cache_path.exists():
+            return False
+
+        try:
+            if self.verbose:
+                print(f"Loading from cache: {cache_path.name}...", end=" ", flush=True)
+            cached = torch.load(cache_path, weights_only=False)
+
+            # Verify cache matches current parameters
+            if (cached['k'] != self.k or
+                cached['patient_ids'] != self.patient_ids):
+                if self.verbose:
+                    print("cache mismatch, rebuilding")
+                return False
+
+            self.graphs = cached['graphs']
+            self.labels = cached['labels']
+            self.patient_indices = cached['patient_indices']
+            if self.verbose:
+                print(f"done ({len(self.graphs)} graphs)")
+            return True
+        except Exception as e:
+            if self.verbose:
+                print(f"cache load failed ({e}), rebuilding")
+            return False
+
+    def _save_to_cache(self):
+        """Save dataset to cache for fast loading next time."""
+        cache_path = self._get_cache_path()
+        if self.verbose:
+            print(f"Saving to cache: {cache_path.name}...", end=" ", flush=True)
+        try:
+            torch.save({
+                'patient_ids': self.patient_ids,
+                'k': self.k,
+                'graphs': self.graphs,
+                'labels': self.labels,
+                'patient_indices': self.patient_indices
+            }, cache_path)
+            if self.verbose:
+                print("done")
+        except Exception as e:
+            if self.verbose:
+                print(f"failed ({e})")
 
     def _upper_to_matrix(self, upper_triangle: np.ndarray) -> np.ndarray:
         """

@@ -16,6 +16,7 @@ dependencies:
   - mne
   - pyedflib
   - scikit-learn
+  - pyyaml
   - ipython
   - jupyter
   - pip
